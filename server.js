@@ -8,127 +8,104 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// --- your criteria ---
+// Enhanced company list with direct Greenhouse public API endpoints
 const TARGET_COMPANIES = [
-  // company slugs as they appear on their ATS
-  // examples (you'll replace with real slugs for Rotor-like, UAV, climate-tech orgs)
-  { board: 'greenhouse', slug: 'limosa' },
-  { board: 'greenhouse', slug: 'mda-space' },
-  { board: 'lever', slug: 'clearpath-robotics' },
-  { board: 'ashby', slug: 'draganfly' }
+  // These use direct Greenhouse public APIs (more reliable)
+  { name: 'Verkada', greenhouse_id: 'verkada' },
+  { name: 'Sourcegraph', greenhouse_id: 'sourcegraph' },
+  { name: 'Scale AI', greenhouse_id: 'scaleai' },
+  { name: 'Anduril', greenhouse_id: 'andurilindustries' },
+  { name: 'Shield AI', greenhouse_id: 'shieldai' },
+  { name: 'Zipline', greenhouse_id: 'zipline' }
 ];
 
 const KEYWORDS = [
-  'aerospace',
-  'uav',
-  'drone',
-  'unmanned',
-  'air mobility',
-  'robotics',
-  'embedded',
-  'firmware',
-  'autonomy',
-  'autonomous',
-  'flight test',
-  'guidance',
-  'navigation',
-  'control',
-  'px4',
-  'ros',
-  'ros2',
-  'rtos',
-  'can bus',
-  'bvlos',
-  'environmental',
-  'climate',
-  'reforestation',
-  'sustainability'
+  'aerospace','uav','drone','unmanned','air mobility','robotics','embedded',
+  'firmware','autonomy','autonomous','flight test','guidance','navigation',
+  'control','px4','ros','ros2','rtos','can','can bus','bvlos','environmental',
+  'climate','reforestation','sustainability','hardware','mechanical','electrical'
 ];
 
-const LOCATION_PREFERENCES = [
-  'montreal',
-  'quebec',
-  'canada',
-  'remote',
-  'hybrid'
-];
+const LOCATION_PREFERENCES = ['montreal','quebec','canada','remote','hybrid'];
 
-// Simple scoring based on your criteria
 function scoreJob(job) {
   const text = (
-    (job.title || '') +
-    ' ' +
-    (job.location || '') +
-    ' ' +
+    (job.title || '') + ' ' +
+    (job.location || '') + ' ' +
     (job.description || '')
   ).toLowerCase();
 
   let score = 0;
 
-  // keywords
-  KEYWORDS.forEach(k => {
-    if (text.includes(k)) score += 3;
-  });
+  KEYWORDS.forEach(k => { if (text.includes(k)) score += 3; });
+  LOCATION_PREFERENCES.forEach(loc => { if (text.includes(loc)) score += 2; });
 
-  // location
-  LOCATION_PREFERENCES.forEach(loc => {
-    if (text.includes(loc)) score += 2;
-  });
-
-  // startup-ish signals
   if (text.includes('startup') || text.includes('fast-paced')) score += 2;
   if (text.includes('r&d') || text.includes('research') || text.includes('prototype')) score += 2;
-
-  // mission / climate
   if (text.includes('climate') || text.includes('sustainab') || text.includes('reforest')) score += 3;
 
   return score;
 }
 
-async function fetchJobsFromCompany(board, slug) {
-  const url = `https://jobber.mihir.ch/${board}/${slug}`; // public proxy API [web:63]
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.error('Failed to fetch', board, slug, res.status);
+// Fetch from Greenhouse public API directly
+async function fetchGreenhouseJobs(greenhouseId, companyName) {
+  try {
+    const url = `https://boards-api.greenhouse.io/v1/boards/${greenhouseId}/jobs?content=true`;
+    console.log(`Fetching from: ${url}`);
+    
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`Failed to fetch ${companyName}:`, res.status);
+      return [];
+    }
+    
+    const data = await res.json();
+    const jobs = data.jobs || [];
+    
+    console.log(`Found ${jobs.length} jobs at ${companyName}`);
+    
+    return jobs.map(j => ({
+      title: j.title,
+      location: j.location?.name || 'Not specified',
+      url: j.absolute_url,
+      description: j.content || '',
+      companySlug: companyName,
+      board: 'greenhouse'
+    }));
+  } catch (error) {
+    console.error(`Error fetching ${companyName}:`, error.message);
     return [];
   }
-  // jobber returns: [{ title, location, link }, ...] [web:63]
-  const data = await res.json();
-  return data.map(j => ({
-    title: j.title,
-    location: j.location,
-    url: j.link,
-    description: '', // not available from jobber; you can enrich later
-    companySlug: slug,
-    board
-  }));
 }
 
-// main endpoint your Labs front-end will call
 app.get('/api/matching-jobs', async (req, res) => {
   try {
+    console.log('Starting job fetch...');
     const allJobs = [];
 
     for (const c of TARGET_COMPANIES) {
-      const jobs = await fetchJobsFromCompany(c.board, c.slug);
+      const jobs = await fetchGreenhouseJobs(c.greenhouse_id, c.name);
       allJobs.push(...jobs);
     }
 
-    // score and filter
+    console.log(`Total jobs fetched: ${allJobs.length}`);
+
     const scored = allJobs
       .map(j => ({ ...j, score: scoreJob(j) }))
-      .filter(j => j.score >= 5) // threshold; tune as you like
+      .filter(j => j.score >= 3) // Lower threshold to show more results
       .sort((a, b) => b.score - a.score);
 
+    console.log(`Jobs after filtering: ${scored.length}`);
+    
     res.json(scored);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch jobs' });
+    console.error('Error in /api/matching-jobs:', err);
+    res.status(500).json({ error: 'Failed to fetch jobs', details: err.message });
   }
 });
 
 app.get('/', (_req, res) => {
-  res.send('Job matcher backend is running');
+  res.send('Job matcher backend is running. Visit /api/matching-jobs to see results.');
 });
 
 app.listen(PORT, () => {
